@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html lang="es"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Simulador y Optimizador de Planificación Agregada · PCP 1 · FI-UNaM</title>
+<script src="https://cdn.tailwindcss.com/3.4.17"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.3.1/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.3.1/umd/react-dom.production.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/htm@3.1.1/dist/htm.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/javascript-lp-solver@0.4.24/prod/solver.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<style>
+:root{--bg:#f4f6f9;--card:#fff;--bd:#e2e8f0;--tx:#1e293b;--mu:#64748b;--ac:#1d4ed8;--sf:#f8fafc;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px);color-scheme:light}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#0f172a;--card:#1e293b;--bd:#334155;--tx:#e2e8f0;--mu:#94a3b8;--ac:#60a5fa;--sf:#273449;color-scheme:dark}}
+:root[data-theme="dark"]{--bg:#0f172a;--card:#1e293b;--bd:#334155;--tx:#e2e8f0;--mu:#94a3b8;--ac:#60a5fa;--sf:#273449;color-scheme:dark}
+html{scroll-padding-top:env(safe-area-inset-top,0px)}
+body{background:var(--bg);color:var(--tx);font-family:Inter,system-ui,-apple-system,"Segoe UI",Arial,sans-serif;margin:0}
+.card{background:var(--card);border:1px solid var(--bd);border-radius:12px}
+.n{text-align:right;font-variant-numeric:tabular-nums}
+.mu{color:var(--mu)} .sf{background:var(--sf)}
+.btn{border:1px solid var(--bd);border-radius:8px;padding:6px 12px;font-size:13px;background:var(--card);cursor:pointer}
+.on{background:var(--ac);color:#fff;border-color:var(--ac)}
+input[type=text],input[type=number]{background:var(--card);color:var(--tx);border:1px solid var(--bd);border-radius:8px;padding:4px 8px}
+.sc{overflow-x:auto}
+</style></head>
+<body><div id="root"></div>
+<script>
+/* ============ MOTOR: MILP idéntico a pap_milp.py (R1–R8) ============ */
+const MESES=["Ene","Feb","Mar","Abr","May","Jun","Jul","Ago","Sep","Oct","Nov","Dic"];
+const PRON=[6255,5932,6408,6298,7491,7903,7811,7872,9114,10111,9914,10184];
+const DIAS=[20,20,22,20,21,20,21,21,22,22,22,20];
+const BASE={ssDic:true,enero:6900,entera:false,ce:6,csub:7,cc:5000,cd:8000,he:10,ss:250,turno:60};
+function solveAP(p){
+  const D=PRON.slice();D[0]=p.enero;const SS=i=>i===11?(p.ssDic?p.ss:0):p.ss;
+  const cons={b12:{max:0}},vars={},ints={};
+  for(let i=0;i<12;i++){const d=DIAS[i];
+    cons["pl"+i]={equal:i?0:180};cons["cap"+i]={max:0};cons["he"+i]={max:0};cons["bal"+i]={equal:-D[i]};
+    cons["lw"+i]={min:100};cons["uw"+i]={max:3*p.turno};cons["ss"+i]={min:SS(i)};
+    const W={cost:32*d,["pl"+i]:1,["cap"+i]:-8*d,["he"+i]:-p.he/100*8*d,["lw"+i]:1,["uw"+i]:1};
+    if(i<11)W["pl"+(i+1)]=-1;vars["W"+i]=W;ints["W"+i]=1;
+    vars["H"+i]={cost:p.cc,["pl"+i]:-1};vars["F"+i]={cost:p.cd,["pl"+i]:1};
+    vars["Pr"+i]={["cap"+i]:2.3,["bal"+i]:-1};
+    vars["Pe"+i]={cost:2.3*p.ce,["he"+i]:2.3,["bal"+i]:-1};
+    vars["Ps"+i]={cost:9.2+p.csub,["bal"+i]:-1};
+    const I={cost:6,["bal"+i]:1,["ss"+i]:1};if(i<11)I["bal"+(i+1)]=-1;vars["I"+i]=I;
+    const B={cost:25,["bal"+i]:-1};if(i<11)B["bal"+(i+1)]=1;else B.b12=1;vars["B"+i]=B;
+    if(p.entera){ints["Pr"+i]=1;ints["Pe"+i]=1;ints["Ps"+i]=1}}
+  const r=solver.Solve({optimize:"cost",opType:"min",constraints:cons,variables:vars,ints});
+  if(!r.feasible)return{ok:false};
+  const g=(k,i)=>r[k+i]||0;let prev=180;
+  const rows=MESES.map((m,i)=>{const d=DIAS[i],W=Math.round(g("W",i)),Pr=g("Pr",i),Pe=g("Pe",i),Ps=g("Ps",i),I=g("I",i),B=g("B",i);
+    const H=Math.max(0,W-prev),F=Math.max(0,prev-W);prev=W;const oc=8*d*W-2.3*Pr;
+    const c={std:9.2*Pr,oc:4*oc,he:2.3*p.ce*Pe,sub:(9.2+p.csub)*Ps,cd:p.cc*H+p.cd*F,pos:6*(I-SS(i)),ret:25*B};
+    return{m,d,D:D[i],W,H,F,Pr,Pe,Ps,I,B,oc,he:p.he/100*8*d*W,c,tot:Object.values(c).reduce((a,b)=>a+b,0)}});
+  const s=k=>rows.reduce((a,x)=>a+x[k],0),sc=k=>rows.reduce((a,x)=>a+x.c[k],0);
+  const comp={std:sc("std"),oc:sc("oc"),he:sc("he"),sub:sc("sub"),cd:sc("cd"),pos:sc("pos"),ret:sc("ret")};
+  const tot=Object.values(comp).reduce((a,b)=>a+b,0),prod=s("Pr")+s("Pe")+s("Ps");
+  return{ok:true,rows,comp,tot,mat:tot+100*prod,H:s("H"),F:s("F"),avgW:s("W")/12,lastW:rows[11].W,
+    heH:2.3*s("Pe"),heMax:s("he"),serv:100*(1-s("B")/s("D")),sub:s("Ps")};
+}
+/* ============ INTERFAZ ============ */
+if(typeof window!=="undefined"){
+const {useState,useMemo,useRef,useEffect}=React,html=htm.bind(React.createElement);
+const f0=x=>Math.round(x).toLocaleString("es-AR"),f1=x=>(Math.round(x*10)/10).toLocaleString("es-AR",{minimumFractionDigits:1}),$=x=>"$ "+f0(x);
+const COL={std:"#3b82f6",oc:"#94a3b8",he:"#f59e0b",sub:"#ef4444",cd:"#8b5cf6",pos:"#10b981",ret:"#ec4899"};
+const NOM={std:"MO estándar",oc:"MO ociosa",he:"Horas extra",sub:"Subcontratación",cd:"Contratación / despido",pos:"Posesión de stock",ret:"Servicio con retraso"};
+const TXT=()=>getComputedStyle(document.documentElement).getPropertyValue("--tx").trim()||"#1e293b";
+function Ch({cfg,h=300}){const r=useRef(),k=JSON.stringify(cfg);
+  useEffect(()=>{const t=TXT();Chart.defaults.color=t;Chart.defaults.borderColor="rgba(148,163,184,.25)";
+    const c=new Chart(r.current,{...cfg,options:{responsive:true,maintainAspectRatio:false,...cfg.options}});return()=>c.destroy()},[k]);
+  return html`<div style=${{height:h}}><canvas ref=${r}></canvas></div>`}
+const K=({t,v,s,c})=>html`<div className="card p-4"><div className="text-xs mu font-medium">${t}</div><div className="text-2xl font-semibold n mt-1" style=${{color:c}}>${v}</div><div className="text-xs mu n mt-1">${s}</div></div>`;
+const Seg=({o,v,on})=>html`<div className="flex gap-2 flex-wrap">${o.map(([a,b])=>html`<button key=${b} className=${"btn "+(v===a?"on":"")} onClick=${()=>on(a)}>${b}</button>`)}</div>`;
+const Num=({l,k,p,set,min,max,step})=>html`<div><div className="flex justify-between text-sm"><span>${l}</span><input type="number" className="n w-24" value=${p[k]} min=${min} max=${max} step=${step} onChange=${e=>set({...p,[k]:+e.target.value})}/></div>
+<input type="range" className="w-full" value=${p[k]} min=${min} max=${max} step=${step} onChange=${e=>set({...p,[k]:+e.target.value})}/></div>`;
+const SUP=[
+["Mano de Obra","Dotación inicial","Fin de diciembre hay 180 operarios: 100 de planta permanente y 80 eventuales (R1: plantilla = anterior + contrataciones − despidos)."],
+["Mano de Obra","Piso de 100 operarios","No se despide personal permanente, por lo que la plantilla nunca baja de 100 (R2)."],
+["Mano de Obra","Despido solo de eventuales","Costo $8.000 por despido y $5.000 por contratación. Solo se paga el ajuste neto de cada mes."],
+["Mano de Obra","Horas extra","Tope por convenio: 10 % de las horas de jornada normal de la plantilla (R5). Cuestan $6 por hora (13,80 por unidad)."],
+["Mano de Obra","Mano de obra ociosa","Las horas pagadas no usadas se valúan a $4. Como la hora estándar y la ociosa valen igual, la mano de obra regular equivale a 4 × 8 × días × operarios."],
+["Turnos y Capacidad","3 turnos × 60 operarios","Techo físico de 180 operarios simultáneos en planta (R3)."],
+["Turnos y Capacidad","Capacidad regular","Cada unidad requiere 2,3 horas estándar; cada operario aporta 8 h por día hábil (R4)."],
+["Turnos y Capacidad","Días hábiles","Ene, feb, abr, jun y dic: 20; may, jul y ago: 21; mar, sep, oct y nov: 22. La demanda diaria es uniforme dentro del mes."],
+["Inventarios","Stock inicial nulo","A diciembre del año anterior no hay stock disponible, así que enero debe reponer el stock de seguridad."],
+["Inventarios","Stock de seguridad","250 unidades como piso del stock físico en todos los meses (R7). Su costo de posesión no se computa, porque es constante en todas las alternativas."],
+["Inventarios","Stock final de diciembre","Por la consigna e) y el Excel del grupo se cierra con 250. La lectura alternativa (stock nulo) se activa en el simulador."],
+["Inventarios","Balance de inventario","Stock − retraso = anterior + producción regular + extra + subcontratada − demanda (R6)."],
+["Demanda","Enero","Se cubren los 6.300 comprometidos más los 600 pendientes = 6.900. La variante usa el pronóstico: 6.255 + 600 = 6.855."],
+["Demanda","Resto del año","Se usa el pronóstico del Cuadro 2 sin modificaciones."],
+["Demanda","Sin retrasos al cierre","No puede quedar demanda atrasada al terminar diciembre (R8). Un retraso cuesta $25 por unidad y mes."],
+["Costos","Base incremental","No se incluyen materiales ($100/u) ni posesión del stock de seguridad. Los materiales se muestran aparte como dato secundario."],
+["Costos","Subcontratación","$7 sobre el costo normal (nota 1 del Cuadro 1): 9,20 de mano de obra + 7 = 16,20 por unidad."],
+["Costos","Posesión","$6 por unidad y mes, solo sobre el stock por encima del stock de seguridad."],
+["Modelo (Tabla 8)","Familias de restricciones","La Tabla A8 del modelo de la cátedra tiene 73 filas: plantilla, piso y techo, capacidad, horas extra, inventario y total. Acá son 85 restricciones (R1–R8)."],
+["Modelo (Tabla 8)","Diferencia con la Tabla A8","La Tabla A8 fija el inventario como igualdad, lo que prohíbe stock y retrasos. Este modelo los deja libres y por eso puede encontrar un óptimo menor."],
+["Modelo (Tabla 8)","Método de resolución","Programación lineal entera mixta (simplex con ramificación y acotamiento). La plantilla es entera; la producción es continua o entera según el interruptor."],
+["Modelo (Tabla 8)","Óptimo casi plano","Un despido ahorra ≈ $8.032 de mano de obra al año y cuesta $8.000. Por eso despedir o no cambia el costo en menos del 0,1 %."]];
+const CATS=["Todas","Mano de Obra","Inventarios","Turnos y Capacidad","Costos","Demanda","Modelo (Tabla 8)"];
+function App(){
+  const [tab,setTab]=useState(0),[p,setP]=useState(BASE),[q,setQ]=useState(""),[cat,setCat]=useState("Todas"),[csv,setCsv]=useState(false);
+  const R=useMemo(()=>solveAP(p),[p]);
+  const tabs=["Tablero Ejecutivo","Planilla Agregada","Simulador “Qué pasa si…”","Supuestos y Consideraciones"];
+  const rows=R.ok?R.rows:[];
+  const sup=SUP.filter(x=>(cat==="Todas"||x[0]===cat)&&(x[1]+x[2]).toLowerCase().includes(q.toLowerCase()));
+  const csvTxt=()=>["Mes","Días","Demanda","Operarios","Contrataciones","Despidos","Prod. Regular","Prod. HE","Subcontratación","Stock Final","Retrasos","Horas Ociosas","Costo Mensual"].join("\t")+"\n"+rows.map(x=>[x.m,x.d,x.D,x.W,x.H,x.F,f1(x.Pr),f1(x.Pe),f1(x.Ps),f1(x.I),f1(x.B),f1(x.oc),f0(x.tot)].join("\t")).join("\n");
+  return html`<div className="max-w-7xl mx-auto p-4 md:p-6 space-y-4">
+  <div className="flex flex-wrap justify-between items-end gap-2"><div><div className="text-xs mu font-medium">FI-UNaM · Ingeniería Industrial · PCP 1 · Integrador N°2 — inciso g)</div>
+   <h1 className="text-2xl font-semibold">Simulador y Optimizador de Planificación Agregada</h1></div>
+   <span className="text-xs px-2 py-1 rounded-full sf border" style=${{borderColor:"var(--bd)"}}>${R.ok?"Óptimo recalculado en vivo":"Sin solución factible"}</span></div>
+  ${!R.ok?html`<div className="card p-6">Con estos parámetros el modelo no tiene solución factible (por ejemplo, un techo de operarios demasiado bajo). Ajustá los valores en el simulador.</div>`:html`<${React.Fragment}>
+  <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+   <${K} t="Costo total incremental" v=${$(R.tot)} s=${"Con materiales: "+$(R.mat)} c="var(--ac)"/>
+   <${K} t="Dotación (inicial 180)" v=${"Prom. "+f1(R.avgW)+" · Final "+R.lastW} s=${"+"+f0(R.H)+" contrataciones · −"+f0(R.F)+" despidos"}/>
+   <${K} t="Horas extra totales" v=${f0(R.heH)+" h"} s=${f1(R.heMax?100*R.heH/R.heMax:0)+" % del máximo permitido"}/>
+   <${K} t="Nivel de servicio" v=${f1(R.serv)+" %"} s=${f0(R.sub)+" unidades subcontratadas"} c=${R.serv>=99.9?"#059669":"#dc2626"}/></div>
+  <div className="flex gap-2 flex-wrap">${tabs.map((t,i)=>html`<button key=${i} className=${"btn "+(tab===i?"on":"")} onClick=${()=>setTab(i)}>${t}</button>`)}</div>
+  ${tab===0&&html`<div className="grid lg:grid-cols-2 gap-4">
+   <div className="card p-4 lg:col-span-2"><div className="font-medium mb-2">Demanda vs. producción por recurso (unidades)</div>
+    <${Ch} cfg=${{data:{labels:MESES,datasets:[
+     {type:"line",label:"Demanda",data:rows.map(x=>x.D),borderColor:"#0f172a",backgroundColor:"#0f172a",tension:.2,order:0},
+     {type:"bar",label:"Prod. regular",data:rows.map(x=>x.Pr),backgroundColor:COL.std,stack:"s"},
+     {type:"bar",label:"Horas extra",data:rows.map(x=>x.Pe),backgroundColor:COL.he,stack:"s"},
+     {type:"bar",label:"Subcontratación",data:rows.map(x=>x.Ps),backgroundColor:COL.sub,stack:"s"}]},
+     options:{scales:{x:{stacked:true},y:{stacked:true}}}}}/></div>
+   <div className="card p-4"><div className="font-medium mb-2">Dotación de operarios (piso 100 · techo ${3*p.turno}) e inventario</div>
+    <${Ch} cfg=${{data:{labels:MESES,datasets:[
+     {type:"bar",label:"Operarios",data:rows.map(x=>x.W),backgroundColor:"#60a5fa",yAxisID:"y"},
+     {type:"line",label:"Piso 100",data:rows.map(()=>100),borderColor:"#dc2626",borderDash:[5,4],pointRadius:0,yAxisID:"y"},
+     {type:"line",label:"Techo",data:rows.map(()=>3*p.turno),borderColor:"#16a34a",borderDash:[5,4],pointRadius:0,yAxisID:"y"},
+     {type:"line",label:"Stock final (un.)",data:rows.map(x=>x.I),borderColor:"#10b981",backgroundColor:"#10b981",yAxisID:"y1"}]},
+     options:{scales:{y:{min:0,max:Math.max(190,3*p.turno+10),title:{display:true,text:"Operarios"}},y1:{position:"right",min:0,grid:{drawOnChartArea:false},title:{display:true,text:"Unidades"}}}}}}/></div>
+   <div className="card p-4"><div className="font-medium mb-2">Composición del costo total incremental</div>
+    <${Ch} cfg=${{type:"doughnut",data:{labels:Object.keys(COL).filter(k=>R.comp[k]>0.5).map(k=>NOM[k]),datasets:[{data:Object.keys(COL).filter(k=>R.comp[k]>0.5).map(k=>Math.round(R.comp[k])),backgroundColor:Object.keys(COL).filter(k=>R.comp[k]>0.5).map(k=>COL[k]),borderWidth:0}]},options:{plugins:{legend:{position:"right"}}}}}/></div></div>`}
+  ${tab===1&&html`<div className="card p-4"><div className="flex justify-between items-center mb-3"><div className="font-medium">Plan agregado mes a mes</div>
+   <button className="btn" onClick=${()=>setCsv(!csv)}>${csv?"Ocultar CSV":"Exportar CSV / Excel"}</button></div>
+   ${csv&&html`<div className="mb-3"><div className="text-xs mu mb-1">Copiá el texto (separado por tabulaciones) y pegalo en Excel.</div><textarea readOnly className="w-full h-40 text-xs p-2 rounded-lg border sf" style=${{borderColor:"var(--bd)",color:"var(--tx)"}} value=${csvTxt()} onFocus=${e=>e.target.select()}/></div>`}
+   <div className="sc"><table className="w-full text-sm"><thead><tr className="sf mu text-xs">${["Mes","Días","Demanda","Operarios","Contrat.","Despidos","Prod. regular","Prod. HE","Subcontrat.","Stock final","Retrasos","Hs. ociosas","Costo mensual ($)"].map((h,i)=>html`<th key=${h} className=${"p-2 font-medium whitespace-nowrap "+(i?"n":"text-left")}>${h}</th>`)}</tr></thead>
+   <tbody>${rows.map(x=>html`<tr key=${x.m} className="border-t" style=${{borderColor:"var(--bd)"}}><td className="p-2 font-medium">${x.m}</td>${[x.d,x.D,x.W,x.H,x.F].map((v,i)=>html`<td key=${i} className="p-2 n">${f0(v)}</td>`)}${[x.Pr,x.Pe,x.Ps,x.I,x.B,x.oc].map((v,i)=>html`<td key=${i} className="p-2 n">${f1(v)}</td>`)}<td className="p-2 n font-medium">${f0(x.tot)}</td></tr>`)}
+   <tr className="border-t-2 font-semibold sf" style=${{borderColor:"var(--bd)"}}><td className="p-2">Total</td><td className="p-2 n">${f0(DIAS.reduce((a,b)=>a+b))}</td><td className="p-2 n">${f0(rows.reduce((a,x)=>a+x.D,0))}</td><td className="p-2 n">${f1(R.avgW)}</td><td className="p-2 n">${f0(R.H)}</td><td className="p-2 n">${f0(R.F)}</td>${["Pr","Pe","Ps"].map(k=>html`<td key=${k} className="p-2 n">${f1(rows.reduce((a,x)=>a+x[k],0))}</td>`)}<td className="p-2 n">${f1(rows[11].I)}</td><td className="p-2 n">${f1(rows.reduce((a,x)=>a+x.B,0))}</td><td className="p-2 n">${f1(rows.reduce((a,x)=>a+x.oc,0))}</td><td className="p-2 n">${f0(R.tot)}</td></tr></tbody></table></div></div>`}
+  ${tab===2&&html`<div className="grid lg:grid-cols-2 gap-4">
+   <div className="card p-4 space-y-4"><div className="font-medium">Supuestos del enunciado</div>
+    <div><div className="text-sm mb-1">Stock final en diciembre</div><${Seg} o=${[[true,"250 un. (Stock Seguridad)"],[false,"0 un. (Nulo)"]]} v=${p.ssDic} on=${v=>setP({...p,ssDic:v})}/></div>
+    <div><div className="text-sm mb-1">Demanda de enero</div><${Seg} o=${[[6900,"6.900 un. (6300 comp. + 600 pend.)"],[6855,"6.855 un. (6255 pron. + 600 pend.)"]]} v=${p.enero} on=${v=>setP({...p,enero:v})}/></div>
+    <div><div className="text-sm mb-1">Redondeo de producción</div><${Seg} o=${[[false,"Continuo"],[true,"Unidades enteras"]]} v=${p.entera} on=${v=>setP({...p,entera:v})}/></div>
+    <button className="btn on" onClick=${()=>setP(BASE)}>Restaurar valores de la Guía</button></div>
+   <div className="card p-4 space-y-4"><div className="font-medium">Parámetros y costos</div>
+    <${Num} l="Costo hora extra ($)" k="ce" p=${p} set=${setP} min=4 max=20 step=0.5/>
+    <${Num} l="Costo subcontratación ($/un. sobre el normal)" k="csub" p=${p} set=${setP} min=0 max=60 step=1/>
+    <${Num} l="Costo contratación ($)" k="cc" p=${p} set=${setP} min=0 max=20000 step=500/>
+    <${Num} l="Costo despido ($)" k="cd" p=${p} set=${setP} min=0 max=20000 step=500/>
+    <${Num} l="% máx. horas extra" k="he" p=${p} set=${setP} min=0 max=30 step=1/>
+    <${Num} l="Stock de seguridad (un.)" k="ss" p=${p} set=${setP} min=0 max=1000 step=50/>
+    <${Num} l="Techo de operarios por turno" k="turno" p=${p} set=${setP} min=34 max=80 step=1/></div>
+   <div className="card p-4 lg:col-span-2 text-sm">Resultado actual: <b>${$(R.tot)}</b> con <b>${R.lastW}</b> operarios al cierre, <b>${f0(R.F)}</b> despidos, <b>${f0(R.H)}</b> contrataciones, <b>${f0(R.heH)}</b> h extra y <b>${f0(R.sub)}</b> unidades subcontratadas. Cada cambio recalcula el óptimo completo.</div></div>`}
+  ${tab===3&&html`<div className="card p-4 space-y-3"><div className="flex gap-2 flex-wrap items-center"><input type="text" placeholder="Buscar un supuesto…" className="w-64" value=${q} onChange=${e=>setQ(e.target.value)}/>
+   ${CATS.map(c=>html`<button key=${c} className=${"btn "+(cat===c?"on":"")} onClick=${()=>setCat(c)}>${c}</button>`)}</div>
+   <div className="text-xs mu">${sup.length} de ${SUP.length} consideraciones</div>
+   ${sup.map((x,i)=>html`<div key=${i} className="border rounded-lg p-3" style=${{borderColor:"var(--bd)"}}><span className="text-xs px-2 py-0.5 rounded-full sf mr-2">${x[0]}</span><b className="text-sm">${x[1]}</b><div className="text-sm mu mt-1">${x[2]}</div></div>`)}</div>`}<//>`}
+  </div>`}
+ReactDOM.createRoot(document.getElementById("root")).render(html`<${App}/>`);
+}
+</script></body></html>
